@@ -1,1 +1,0 @@
-# wpPanel-by-Breach-Rabbit
