@@ -1,0 +1,127 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "allowJs": true,
+    "checkJs": false,
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    // ✅ Next.js 16.1 — App Router требует
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    // ✅ Strict mode для безопасности и качества кода
+    "strict": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "noImplicitAny": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noEmitOnError": true,
+    // ✅ Module resolution
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "incremental": true,
+    // ✅ Path aliases (согласовано с next.config.ts)
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "./*"
+      ],
+      "@components/*": [
+        "./components/*"
+      ],
+      "@ui/*": [
+        "./components/ui/*"
+      ],
+      "@lib/*": [
+        "./lib/*"
+      ],
+      "@services/*": [
+        "./lib/services/*"
+      ],
+      "@integrations/*": [
+        "./lib/integrations/*"
+      ],
+      "@api/*": [
+        "./app/api/*"
+      ],
+      "@hooks/*": [
+        "./hooks/*"
+      ],
+      "@stores/*": [
+        "./stores/*"
+      ],
+      "@types/*": [
+        "./types/*"
+      ],
+      "@config/*": [
+        "./config/*"
+      ]
+    },
+    // ✅ Output
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "removeComments": false,
+    // ✅ Type checking
+    "types": [
+      "node",
+      "react",
+      "react-dom"
+    ],
+    "typeRoots": [
+      "./node_modules/@types",
+      "./types"
+    ],
+    // ✅ Next.js 16具体要求
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true
+  },
+  // ✅ Include/Exclude
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    "types/**/*.d.ts",
+    ".next/dev/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next",
+    "out",
+    "dist",
+    "build",
+    "coverage",
+    "prisma/migrations"
+  ],
+  // ✅ TS Node (для скриптов)
+  "ts-node": {
+    "compilerOptions": {
+      "module": "CommonJS"
+    },
+    "require": [
+      "tsconfig-paths/register"
+    ]
+  }
+}

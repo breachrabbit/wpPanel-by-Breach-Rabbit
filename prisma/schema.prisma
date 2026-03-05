@@ -1,0 +1,1006 @@
+// =============================================================================
+// wpPanel by Breach Rabbit — Prisma Schema
+// =============================================================================
+// Database: PostgreSQL 16
+// ORM: Prisma 5.x
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+  previewFeatures = []
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// 🔐 AUTH & USERS
+// =============================================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String
+  name          String?
+  role          Role      @default(ADMIN)
+  
+  // 2FA Settings
+  twoFactorEnabled Boolean  @default(false)
+  twoFactorSecret  String?  @map("2fa_secret")
+  twoFactorBackupCodes String[] @default([]) @map("2fa_backup_codes")
+  
+  // Preferences
+  theme         Theme     @default(DARK)
+  language      Language  @default(EN)
+  timezone      String    @default("UTC")
+  
+  // Sessions & Activity
+  sessions      Session[]
+  loginAttempts LoginAttempt[]
+  auditLogs     AuditLog[]
+  sites         Site[]
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastLoginAt   DateTime?
+  
+  @@map("users")
+}
+
+enum Role {
+  ADMIN
+  CLIENT  // Reserved for v2.0 Multi-VPS
+}
+
+enum Theme {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
+enum Language {
+  EN
+  RU
+  ES
+}
+
+// =============================================================================
+// 🔑 SESSIONS & SECURITY
+// =============================================================================
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  token        String   @unique
+  ipAddress    String
+  userAgent    String?
+  country      String?
+  city         String?
+  
+  isActive     Boolean  @default(true)
+  expiresAt    DateTime
+  
+  createdAt    DateTime @default(now())
+  lastActiveAt DateTime @default(now())
+  
+  @@index([userId])
+  @@index([token])
+  @@map("sessions")
+}
+
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  ipAddress String
+  email     String?  // For failed attempts before user lookup
+  success   Boolean
+  
+  createdAt DateTime @default(now())
+  
+  @@index([ipAddress])
+  @@index([createdAt])
+  @@map("login_attempts")
+}
+
+// =============================================================================
+// 🛠️ INSTALLER
+// =============================================================================
+
+model InstallerSession {
+  id          String   @id @default(cuid())
+  token       String   @unique  // One-time setup token from .env
+  
+  completed   Boolean  @default(false)
+  config      Json?    // Saved configuration during setup
+  
+  // Setup progress tracking
+  currentStep String?
+  logs        String[] @default([])
+  
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+  
+  @@map("installer_sessions")
+}
+
+// =============================================================================
+// 🌐 SITES
+// =============================================================================
+
+model Site {
+  id            String      @id @default(cuid())
+  userId        String?
+  user          User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  name          String      // Friendly name
+  domain        String      @unique
+  domainAliases String[]    @default([])
+
+  type          SiteType    @default(WORDPRESS)
+  status        SiteStatus  @default(STOPPED)
+  
+  // Path & Configuration
+  rootPath      String      // /var/www/domain.com
+  phpVersion    String      @default("8.3")
+  
+  // SSL
+  sslEnabled    Boolean     @default(false)
+  sslStatus     SslStatus   @default(NONE)
+  sslExpiresAt  DateTime?
+  certificates  SslCertificate[]
+  
+  // Auto-restart & Monitoring
+  autoRestart   Boolean     @default(true)
+  healthCheck   Boolean     @default(true)
+  healthCheckUrl String?    @default("/")
+  lastHealthCheck DateTime?
+  healthStatus  HealthStatus @default(UNKNOWN)
+  
+  // Metrics (cached/aggregated)
+  requestsDay   Int         @default(0)
+  bandwidthDay  BigInt      @default(0)
+  avgResponseTime Int       @default(0)  // milliseconds
+  
+  // Relations
+  databases     Database[]
+  backups       Backup[]
+  wordpress     WordPressInstance?
+  cronJobs      CronJob[]
+  firewallRules FirewallRule[]
+  backupSchedules BackupSchedule[]
+  siteMetrics   SiteMetric[]
+  alerts        Alert[]
+  
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  deletedAt     DateTime?   // Soft delete
+  
+  @@index([status])
+  @@index([domain])
+  @@map("sites")
+}
+
+enum SiteType {
+  WORDPRESS
+  STATIC
+  PHP
+  NODEJS
+  PROXY
+  DOCKER
+}
+
+enum SiteStatus {
+  RUNNING
+  STOPPED
+  ERROR
+  MAINTENANCE
+}
+
+enum SslStatus {
+  NONE
+  PENDING
+  ACTIVE
+  EXPIRING
+  EXPIRED
+  CUSTOM
+}
+
+enum HealthStatus {
+  UNKNOWN
+  HEALTHY
+  UNHEALTHY
+  DEGRADED
+}
+
+// =============================================================================
+// 🔒 SSL CERTIFICATES
+// =============================================================================
+
+model SslCertificate {
+  id            String   @id @default(cuid())
+  siteId        String?
+  site          Site?    @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  
+  domain        String
+  domainAliases String[] @default([])
+  
+  type          SslType  @default(AUTO)
+  provider      SslProvider @default(LETSENCRYPT)
+  
+  // Certificate data (for custom certs)
+  certificate   String?  @db.Text
+  privateKey    String?  @db.Text
+  caBundle      String?  @db.Text @map("ca_bundle")
+  
+  // Metadata
+  issuer        String?
+  subject       String?
+  sans          String[] @default([])
+  algorithm     String?  // RSA-2048, ECDSA-P256, etc.
+  
+  // Validity
+  issuedAt      DateTime
+  expiresAt     DateTime
+  autoRenew     Boolean  @default(true)
+  
+  // Status
+  status        SslCertStatus @default(PENDING)
+  lastRenewalAt DateTime?
+  nextRenewalAt DateTime?
+  
+  // acme.sh tracking
+  acmeOrderId   String?
+  acmeAuthz     Json?
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@index([domain])
+  @@index([expiresAt])
+  @@index([status])
+  @@map("ssl_certificates")
+}
+
+enum SslType {
+  AUTO
+  CUSTOM
+}
+
+enum SslProvider {
+  LETSENCRYPT
+  ZEROSLL
+  CUSTOM
+}
+
+enum SslCertStatus {
+  PENDING
+  VALID
+  EXPIRING
+  EXPIRED
+  REVOKED
+  ERROR
+}
+
+// =============================================================================
+// 💾 DATABASES
+// =============================================================================
+
+model Database {
+  id            String   @id @default(cuid())
+  siteId        String?
+  site          Site?    @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  
+  name          String   @unique
+  engine        DbEngine @default(MARIADB)
+  
+  host          String   @default("localhost")
+  port          Int      @default(3306)
+  username      String   @unique
+  passwordHash  String   @map("password_hash")
+  
+  charset       String   @default("utf8mb4")
+  collation     String   @default("utf8mb4_unicode_ci")
+  
+  sizeBytes     BigInt   @default(0)
+  tablesCount   Int      @default(0)
+  
+  backups       Backup[]
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@index([siteId])
+  @@map("databases")
+}
+
+enum DbEngine {
+  MARIADB
+  POSTGRESQL
+}
+
+// =============================================================================
+// 💿 BACKUPS (Restic)
+// =============================================================================
+
+model Backup {
+  id            String   @id @default(cuid())
+  siteId        String?
+  site          Site?    @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  databaseId    String?
+  database      Database? @relation(fields: [databaseId], references: [id], onDelete: SetNull)
+  
+  type          BackupType @default(FULL)
+  source        BackupSource @default(MANUAL)
+  
+  // Restic snapshot tracking
+  resticSnapshotId String?
+  resticSnapshot     ResticSnapshot?
+  
+  // Storage
+  storageType   StorageType @default(LOCAL)
+  storagePath   String?    // Local path or S3 key prefix
+  
+  // Size & Stats
+  sizeBytes     BigInt     @default(0)
+  filesCount    Int        @default(0)
+  duration      Int        @default(0)  // seconds
+  
+  // Status
+  status        BackupStatus @default(PENDING)
+  errorMessage  String?    @db.Text
+  
+  // Progress (for live updates)
+  progress      Int        @default(0)  // 0-100
+  currentFile   String?
+  
+  // Retention
+  retainUntil   DateTime?
+  isPinned      Boolean    @default(false)  // Don't auto-delete
+  
+  createdAt     DateTime   @default(now())
+  completedAt   DateTime?
+  deletedAt     DateTime?
+  
+  @@index([siteId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("backups")
+}
+
+enum BackupType {
+  FULL
+  INCREMENTAL
+  DATABASE_ONLY
+  FILES_ONLY
+}
+
+enum BackupSource {
+  MANUAL
+  SCHEDULED
+  PRE_UPDATE
+  PRE_DEPLOY
+}
+
+enum BackupStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  DELETING
+}
+
+enum StorageType {
+  LOCAL
+  S3
+  SFTP
+  B2
+}
+
+model ResticSnapshot {
+  id           String   @id @default(cuid())
+  snapshotId   String   @unique  // Restic's native snapshot ID
+  
+  backupId     String?  @unique
+  backup       Backup?  @relation(fields: [backupId], references: [id], onDelete: Cascade)
+  
+  hostname     String
+  paths        String[]
+  tags         String[]
+  sizeBytes    BigInt?
+  tree         Json?    // File tree structure
+  
+  snapshotTime DateTime
+  createdAt    DateTime @default(now())
+  
+  @@index([snapshotId])
+  @@index([snapshotTime])
+  @@map("restic_snapshots")
+}
+
+model BackupSchedule {
+  id            String   @id @default(cuid())
+  siteId        String?
+  site          Site?    @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  
+  name          String
+  isActive      Boolean  @default(true)
+  
+  // Cron expression
+  schedule      String   // e.g., "0 3 * * *"
+  timezone      String   @default("UTC")
+  
+  // What to backup
+  backupType    BackupType @default(FULL)
+  includeFiles  Boolean  @default(true)
+  includeDatabase Boolean @default(true)
+  
+  // Retention policy
+  retainDaily   Int      @default(7)
+  retainWeekly  Int      @default(4)
+  retainMonthly Int      @default(3)
+  
+  // Storage
+  storageType   StorageType @default(LOCAL)
+  storageConfig Json?
+  
+  lastRunAt     DateTime?
+  nextRunAt     DateTime?
+  lastStatus    BackupStatus?
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@index([siteId])
+  @@index([isActive])
+  @@map("backup_schedules")
+}
+
+// =============================================================================
+// 🚀 WORDPRESS TOOLKIT
+// =============================================================================
+
+model WordPressInstance {
+  id            String   @id @default(cuid())
+  siteId        String   @unique
+  site          Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  
+  // Installation info
+  version       String
+  adminUser     String
+  adminEmail    String
+  language      String   @default("en_US")
+  siteUrl       String
+  homeUrl       String
+  
+  // Auto-updates
+  autoUpdateCore    Boolean @default(true)
+  autoUpdatePlugins Boolean @default(false)
+  autoUpdateThemes  Boolean @default(false)
+  
+  // Security
+  securityScore Int?     // 0-100
+  lastScanAt    DateTime?
+  lastBackupAt  DateTime?
+  
+  // Hardening
+  xmlRpcDisabled    Boolean @default(false)
+  wpAdminRenamed    Boolean @default(false)
+  wpConfigProtected Boolean @default(false)
+  versionHidden     Boolean @default(false)
+  forceHttps        Boolean @default(false)
+  
+  // Plugins & Themes
+  plugins       WPPlugin[]
+  themes        WPTheme[]
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@index([siteId])
+  @@map("wordpress_instances")
+}
+
+model WPPlugin {
+  id            String            @id @default(cuid())
+  wpId          String
+  wp            WordPressInstance @relation(fields: [wpId], references: [id], onDelete: Cascade)
+  
+  slug          String
+  name          String
+  version       String
+  latestVersion String?
+  status        WpPluginStatus @default(INACTIVE)
+  
+  autoUpdate    Boolean      @default(false)
+  isPremium     Boolean      @default(false)
+  
+  updatedAt     DateTime @updatedAt
+  
+  @@index([wpId])
+  @@index([slug])
+  @@map("wp_plugins")
+}
+
+model WPTheme {
+  id            String            @id @default(cuid())
+  wpId          String
+  wp            WordPressInstance @relation(fields: [wpId], references: [id], onDelete: Cascade)
+  
+  slug          String
+  name          String
+  version       String
+  latestVersion String?
+  isActive      Boolean @default(false)
+  isChild       Boolean @default(false)
+  parentTheme   String?
+  
+  autoUpdate    Boolean @default(false)
+  
+  updatedAt     DateTime @updatedAt
+  
+  @@index([wpId])
+  @@index([slug])
+  @@map("wp_themes")
+}
+
+enum WpPluginStatus {
+  ACTIVE
+  INACTIVE
+  UPDATE_AVAILABLE
+  ERROR
+}
+
+// =============================================================================
+// 🔥 FIREWALL (UFW)
+// =============================================================================
+
+model FirewallRule {
+  id            String   @id @default(cuid())
+  siteId        String?
+  site          Site?    @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  
+  name          String
+  isActive      Boolean  @default(true)
+  
+  action        FirewallAction @default(ALLOW)
+  direction     FirewallDirection @default(INBOUND)
+  
+  protocol      Protocol @default(TCP)
+  port          String?  // Single port or range (e.g., "80" or "8000-9000")
+  ports         String[] @default([])  // Multiple specific ports
+  
+  sourceIp      String?  // Single IP or CIDR
+  sourceCidr    String?
+  
+  description   String?
+  
+  // Fail2ban tracking
+  isFail2ban    Boolean  @default(false)
+  fail2banJail  String?
+  
+  hits          Int      @default(0)
+  lastHitAt     DateTime?
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@index([siteId])
+  @@index([isActive])
+  @@index([action])
+  @@map("firewall_rules")
+}
+
+enum FirewallAction {
+  ALLOW
+  DENY
+  REJECT
+  LIMIT
+}
+
+enum FirewallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum Protocol {
+  TCP
+  UDP
+  ICMP
+  ANY
+}
+
+// =============================================================================
+// ⏰ CRON JOBS
+// =============================================================================
+
+model CronJob {
+  id            String   @id @default(cuid())
+  siteId        String?
+  site          Site?    @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  name          String
+  command       String   @db.Text
+  user          String   @default("root")
+
+  schedule      String   // Cron expression
+  timezone      String   @default("UTC")
+
+  isActive      Boolean  @default(true)
+
+  // Execution tracking
+  lastRunAt     DateTime?
+  lastDuration  Int?     // seconds
+  lastStatus    CronStatus?
+  lastOutput    String?  @db.Text
+  lastError     String?  @db.Text
+
+  nextRunAt     DateTime?
+
+  // Notifications
+  notifyOnFailure Boolean @default(true)
+  notifyEmail   String?
+
+  // Relations
+  cronLogs      CronLog[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([siteId])
+  @@index([isActive])
+  @@map("cron_jobs")
+}
+
+model CronLog {
+  id         String   @id @default(cuid())
+  cronJobId  String
+  cronJob    CronJob  @relation(fields: [cronJobId], references: [id], onDelete: Cascade)
+
+  executedAt DateTime @default(now())
+  duration   Int?
+  exitCode   Int?
+  stdout     String?  @db.Text
+  stderr     String?  @db.Text
+  success    Boolean  @default(true)
+
+  @@index([cronJobId])
+  @@map("cron_logs")
+}
+
+enum CronStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+// =============================================================================
+// 📊 MONITORING & ALERTS
+// =============================================================================
+
+model ServerMetric {
+  id            String   @id @default(cuid())
+  
+  // Timestamp (bucketed by minute)
+  timestamp     DateTime
+  
+  // CPU
+  cpuUsage      Float?   // 0-100
+  cpuLoad1      Float?
+  cpuLoad5      Float?
+  cpuLoad15     Float?
+  cpuCores      Int?
+  
+  // Memory
+  ramTotal      BigInt?
+  ramUsed       BigInt?
+  ramFree       BigInt?
+  ramCached     BigInt?
+  swapTotal     BigInt?
+  swapUsed      BigInt?
+  
+  // Disk
+  diskTotal     BigInt?
+  diskUsed      BigInt?
+  diskFree      BigInt?
+  diskIoRead    BigInt?  // bytes
+  diskIoWrite   BigInt?  // bytes
+  
+  // Network
+  netRxBytes    BigInt?
+  netTxBytes    BigInt?
+  netRxPackets  BigInt?
+  netTxPackets  BigInt?
+  
+  // Process count
+  processCount  Int?
+  
+  createdAt     DateTime @default(now())
+  
+  @@unique([timestamp])
+  @@index([timestamp])
+  @@map("server_metrics")
+}
+
+model SiteMetric {
+  id            String   @id @default(cuid())
+  siteId        String
+  site          Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  
+  // Timestamp (bucketed by minute)
+  timestamp     DateTime
+  
+  // Traffic
+  requests      Int      @default(0)
+  bandwidthIn   BigInt   @default(0)
+  bandwidthOut  BigInt   @default(0)
+  
+  // Performance
+  avgResponseTime Int    @default(0)
+  p95ResponseTime Int?
+  p99ResponseTime Int?
+  
+  // Status codes
+  status2xx     Int      @default(0)
+  status3xx     Int      @default(0)
+  status4xx     Int      @default(0)
+  status5xx     Int      @default(0)
+  
+  // Top paths (aggregated)
+  topPaths      Json?    // [{path: "/wp-admin", count: 100}, ...]
+  topIps        Json?    // [{ip: "1.2.3.4", count: 50}, ...]
+  
+  createdAt     DateTime @default(now())
+  
+  @@index([siteId])
+  @@index([timestamp])
+  @@unique([siteId, timestamp])
+  @@map("site_metrics")
+}
+
+model Alert {
+  id            String   @id @default(cuid())
+  
+  type          AlertType
+  severity      AlertSeverity @default(WARNING)
+  
+  title         String
+  message       String?  @db.Text
+  
+  // Context
+  siteId        String?
+  site          Site?    @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  metricName    String?
+  threshold     Float?
+  currentValue  Float?
+  
+  // Status
+  status        AlertStatus @default(NEW)
+  acknowledgedBy String?
+  acknowledgedAt DateTime?
+  
+  // Notifications
+  notifiedEmail Boolean  @default(false)
+  notifiedTelegram Boolean @default(false)
+  notifiedAt    DateTime?
+  
+  createdAt     DateTime @default(now())
+  resolvedAt    DateTime?
+  
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+  @@map("alerts")
+}
+
+enum AlertType {
+  SSL_EXPIRING
+  SSL_EXPIRED
+  DISK_WARNING
+  DISK_CRITICAL
+  CPU_WARNING
+  CPU_CRITICAL
+  RAM_WARNING
+  RAM_CRITICAL
+  BACKUP_FAILED
+  SITE_DOWN
+  UPDATE_AVAILABLE
+  SECURITY_SCAN_ISSUES
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum AlertStatus {
+  NEW
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+model AlertRule {
+  id            String   @id @default(cuid())
+  
+  name          String
+  type          AlertType @unique
+  
+  isActive      Boolean  @default(true)
+  
+  // Thresholds
+  warningThreshold Float?
+  criticalThreshold Float?
+  
+  // Notification channels
+  notifyEmail   Boolean  @default(true)
+  notifyTelegram Boolean @default(true)
+  
+  // Cooldown (minutes between notifications)
+  cooldownMinutes Int    @default(60)
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@map("alert_rules")
+}
+
+// =============================================================================
+// 📧 NOTIFICATIONS
+// =============================================================================
+
+model NotificationChannel {
+  id            String   @id @default(cuid())
+  
+  type          NotificationType @unique
+  name          String
+  
+  isActive      Boolean  @default(false)
+  
+  // Configuration (encrypted)
+  config        Json
+  
+  lastTestAt    DateTime?
+  lastTestStatus Boolean?
+
+  notifications Notification[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("notification_channels")
+}
+
+enum NotificationType {
+  EMAIL
+  TELEGRAM
+  WEBHOOK
+}
+
+model Notification {
+  id            String   @id @default(cuid())
+  
+  channelId     String
+  channel       NotificationChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  
+  type          String
+  title         String
+  message       String @db.Text
+  
+  // Context
+  siteId        String?
+  alertId       String?
+  
+  status        NotificationStatus @default(PENDING)
+  errorMessage  String?
+  
+  sentAt        DateTime?
+  
+  createdAt     DateTime @default(now())
+  
+  @@index([channelId])
+  @@index([status])
+  @@map("notifications")
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// =============================================================================
+// 📝 AUDIT LOG
+// =============================================================================
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  userId        String?
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  action        AuditAction
+  resource      String   // e.g., "site", "database", "backup"
+  resourceId    String?
+  
+  ipAddress     String?
+  userAgent     String?
+  
+  // Changes (for UPDATE actions)
+  oldValue      Json?
+  newValue      Json?
+  
+  metadata      Json?
+  
+  createdAt     DateTime @default(now())
+  
+  @@index([userId])
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+enum AuditAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  LOGIN_FAILED
+  PERMISSION_DENIED
+  SYSTEM_CHANGE
+  BACKUP_CREATED
+  BACKUP_RESTORED
+  SSL_ISSUED
+  SSL_RENEWED
+  SITE_STARTED
+  SITE_STOPPED
+  SITE_RESTARTED
+}
+
+// =============================================================================
+// ⚙️ SYSTEM SETTINGS
+// =============================================================================
+
+model SystemSetting {
+  id            String   @id @default(cuid())
+  key           String   @unique
+  value         Json
+  
+  description   String?
+  isEncrypted   Boolean  @default(false)
+  
+  updatedAt     DateTime @updatedAt
+  
+  @@index([key])
+  @@map("system_settings")
+}
+
+// =============================================================================
+// 🔄 AUTO UPDATE TRACKING
+// =============================================================================
+
+model UpdateCheck {
+  id            String   @id @default(cuid())
+  
+  currentVersion String
+  latestVersion  String?
+  hasUpdate      Boolean  @default(false)
+  
+  changelog     String?  @db.Text
+  releaseUrl    String?
+  
+  checkedAt     DateTime @default(now())
+  
+  @@map("update_checks")
+}
+
